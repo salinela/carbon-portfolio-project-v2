@@ -1,0 +1,13 @@
+pandas
+numpy
+yfinance
+lightgbm
+scikit-learn
+plotly
+dash
+mlflow
+sqlalchemy
+python-dotenv
+rapidfuzz
+matplotlib
+seaborn
