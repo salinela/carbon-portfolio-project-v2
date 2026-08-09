@@ -1,20 +1,26 @@
-.venvcarbon/
-venv/
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-data/raw/*
-!data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-models/*
-!models/.gitkeep
-mlruns/
-mlartifacts/
-.env
-*.env
-.vscode/
+# macOS
 .DS_Store
-Thumbs.db
-*.log
-logs/
+
+# Virtual environment
+.venvcarbon/
+
+# Python bytecode cache
+__pycache__/
+*.py[cod]
+
+# SQLite warehouse (rebuildable binaries)
+*.db
+*.db-shm
+*.db-wal
+
+# Raw & processed data (licensed / proprietary / rebuildable)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Derived exports
+notebooks/sample_master.csv
+
+# Secrets
+.env
