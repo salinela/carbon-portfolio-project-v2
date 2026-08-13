@@ -185,6 +185,8 @@ CREATE INDEX IF NOT EXISTS ix_cemis_year ON company_emissions(year);
 
 
 -- Daily OHLCV. ~8,288 companies x ~1,760 trading days = ~14.6M rows.
+-- Raw local-currency prices only (no adj_close): raw values never change,
+-- so INSERT OR IGNORE is truly idempotent. Splits/dividends handled on read.
 -- NOTE the index on date alone: walk-forward validation slices the panel
 -- BY DATE across all companies, which the composite PK cannot serve.
 CREATE TABLE IF NOT EXISTS prices (
@@ -194,13 +196,22 @@ CREATE TABLE IF NOT EXISTS prices (
     high        REAL,
     low         REAL,
     close       REAL,
-    adj_close   REAL,
     volume      REAL,
+    currency    TEXT,                  -- 'EUR','GBp','SEK'...  for read-time FX
     source      TEXT,                  -- yfinance / ciq
     PRIMARY KEY (company_id, date),
     FOREIGN KEY (company_id) REFERENCES master_company_list(company_id)
 );
 CREATE INDEX IF NOT EXISTS ix_price_date ON prices(date);
+
+
+CREATE TABLE IF NOT EXISTS fx_rates (
+    date         TEXT NOT NULL,
+    currency     TEXT NOT NULL,        -- major unit: 'USD','SEK','GBP'...
+    rate_per_eur REAL,                 -- units of `currency` per 1 EUR
+    source       TEXT DEFAULT 'yfinance',
+    PRIMARY KEY (date, currency)
+);
 
 
 -- Fundamentals per company-period. Long format keeps it flexible as the
@@ -229,6 +240,19 @@ CREATE TABLE IF NOT EXISTS signals (
 CREATE INDEX IF NOT EXISTS ix_sig_name_date ON signals(signal_name, date);
 
 
+-- Symbol resolution + load funnel. Process/log data, not master data.
+-- One row per company: 8,288 total = mapped_loaded + mapped_no_data + unmapped_exchange + no_ticker.
+CREATE TABLE IF NOT EXISTS symbol_coverage (
+    company_id   TEXT PRIMARY KEY,
+    ticker       TEXT,
+    exchange     TEXT,
+    yahoo_symbol TEXT,
+    currency     TEXT,
+    status       TEXT,          -- mapped_loaded / mapped_no_data / unmapped_exchange / no_ticker
+    universe     TEXT,
+    FOREIGN KEY (company_id) REFERENCES master_company_list(company_id)
+);
+
 -- ---------------------------------------------------------------------------
 -- CONVENIENCE VIEWS
 -- ---------------------------------------------------------------------------
@@ -254,3 +278,5 @@ SELECT universe, country, COUNT(*) AS n_companies,
        SUM(CASE WHEN ticker IS NULL THEN 1 ELSE 0 END) AS n_no_ticker
 FROM master_company_list
 GROUP BY universe, country;
+
+
