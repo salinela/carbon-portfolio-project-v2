@@ -253,6 +253,18 @@ CREATE TABLE IF NOT EXISTS symbol_coverage (
     FOREIGN KEY (company_id) REFERENCES master_company_list(company_id)
 );
 
+-- Corporate actions: splits + dividends, for adjust-on-read.
+-- action_type: 'split' (ratio, e.g. 2.0 for 2:1) | 'dividend' (per-share, LOCAL currency).
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    company_id  TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    action_type TEXT NOT NULL,        -- 'split' | 'dividend'
+    value       REAL,                 -- split: ratio ; dividend: per-share amount
+    source      TEXT DEFAULT 'yfinance',
+    PRIMARY KEY (company_id, date, action_type),
+    FOREIGN KEY (company_id) REFERENCES master_company_list(company_id)
+);
+
 -- ---------------------------------------------------------------------------
 -- CONVENIENCE VIEWS
 -- ---------------------------------------------------------------------------
