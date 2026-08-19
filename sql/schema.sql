@@ -155,20 +155,6 @@ CREATE INDEX IF NOT EXISTS ix_inst_operator ON installations(operator_type);
 -- PANEL TABLES
 -- ---------------------------------------------------------------------------
 
--- Verified emissions / allocation per installation-year (EU ETS registry).
-CREATE TABLE IF NOT EXISTS emissions (
-    installation_id     TEXT NOT NULL,
-    year                INTEGER NOT NULL,
-    verified_emissions  REAL,
-    allocated_free      REAL,
-    surrendered         REAL,
-    compliance_status   TEXT,
-    PRIMARY KEY (installation_id, year),
-    FOREIGN KEY (installation_id) REFERENCES installations(installation_id)
-);
-CREATE INDEX IF NOT EXISTS ix_emis_year ON emissions(year);
-
-
 -- Company-year Scope 1 emissions, the COMMON metric across both universes.
 -- ETS firms: verified emissions from the EU registry (aggregated to company).
 -- Non-ETS: Absolute GHG Scope 1 disclosed via Trucost.
@@ -182,6 +168,22 @@ CREATE TABLE IF NOT EXISTS company_emissions (
     FOREIGN KEY (company_id) REFERENCES master_company_list(company_id)
 );
 CREATE INDEX IF NOT EXISTS ix_cemis_year ON company_emissions(year);
+
+
+-- ETS-only company-year signals (no Trucost analogue; kept out of company_emissions
+-- to preserve its shared-metric contract). Subsidy + true-up + provenance.
+CREATE TABLE IF NOT EXISTS ets_company_extras (
+    company_id        TEXT NOT NULL,
+    year              INTEGER NOT NULL,
+    allocated_free    REAL,
+    surrendered       REAL,
+    n_installations   INTEGER,
+    n_verified_report INTEGER,
+    has_aircraft      INTEGER,
+    PRIMARY KEY (company_id, year),
+    FOREIGN KEY (company_id) REFERENCES master_company_list(company_id)
+);
+CREATE INDEX IF NOT EXISTS ix_ets_extras_year ON ets_company_extras(year);
 
 
 -- Daily OHLCV. ~8,288 companies x ~1,760 trading days = ~14.6M rows.
