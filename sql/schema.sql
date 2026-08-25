@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS master_company_list (
     exchange        TEXT,
     country         TEXT,                      -- ISO-2
     sector          TEXT,                      -- to backfill from orbis_core
+    nace_code       TEXT,
     bvd_id_number   TEXT,                      -- own bvd (EU) or parent's bvd (ETS);
                                                -- FK to orbis_core, nullable (CIQ-only
                                                -- parents have no orbis_core row)
@@ -219,15 +220,35 @@ CREATE TABLE IF NOT EXISTS fx_rates (
 -- Fundamentals per company-period. Long format keeps it flexible as the
 -- metric list grows without schema migrations.
 CREATE TABLE IF NOT EXISTS fundamentals (
-    company_id   TEXT NOT NULL,
-    period_end   TEXT NOT NULL,
-    metric       TEXT NOT NULL,
-    value        REAL,
-    period_type  TEXT CHECK (period_type IN ('annual','quarterly')),
-    PRIMARY KEY (company_id, period_end, metric),
+    company_id           TEXT NOT NULL,
+    year                 INTEGER NOT NULL,
+    revenue              REAL,   -- all monetary in EUR '000
+    capex                REAL,
+    cash                 REAL,
+    cash_sti             REAL,
+    cfo                  REAL,
+    dps                  REAL,   -- EUR per share
+    shares_out           REAL,   -- actual count
+    earn_cont_ops        REAL,
+    ebitda               REAL,
+    ebit                 REAL,
+    gross_profit         REAL,
+    interest_expense     REAL,
+    net_income           REAL,
+    ni_to_common         REAL,
+    rnd                  REAL,
+    repurchase_common    REAL,
+    total_assets         REAL,
+    total_common_equity  REAL,
+    total_current_assets REAL,
+    total_debt           REAL,
+    total_liabilities    REAL,
+    reported_currency    TEXT,
+    filing_date          TEXT,   -- audit only; NOT the as-of driver (off-by-one)
+    sp_entity_id         TEXT,
+    PRIMARY KEY (company_id, year),
     FOREIGN KEY (company_id) REFERENCES master_company_list(company_id)
 );
-CREATE INDEX IF NOT EXISTS ix_fund_metric ON fundamentals(metric, period_end);
 
 
 -- Engineered features / model inputs, long format for the same reason.
