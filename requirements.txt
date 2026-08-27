@@ -11,3 +11,4 @@ python-dotenv
 rapidfuzz
 matplotlib
 seaborn
+pandas_datareader

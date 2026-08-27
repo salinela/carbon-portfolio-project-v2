@@ -152,6 +152,26 @@ CREATE INDEX IF NOT EXISTS ix_inst_bvd      ON installations(bvd_id_number);
 CREATE INDEX IF NOT EXISTS ix_inst_operator ON installations(operator_type);
 
 
+-- From notebook 06: Market factors
+CREATE TABLE IF NOT EXISTS market_factors (
+    date             TEXT NOT NULL,
+    factor           TEXT NOT NULL,
+    price_type       TEXT NOT NULL,
+    price            REAL,
+    PRIMARY KEY (date, factor, price_type)
+);
+CREATE INDEX IF NOT EXISTS ix_mkt_factor ON market_factors(factor);
+
+
+CREATE TABLE IF NOT EXISTS ff_factors (
+    date            TEXT NOT NULL,
+    factor          TEXT NOT NULL,
+    value           REAL,
+    PRIMARY KEY (date, factor)
+);
+CREATE INDEX IF NOT EXISTS ix_ff_factor ON ff_factors(factor);
+
+
 -- ---------------------------------------------------------------------------
 -- PANEL TABLES
 -- ---------------------------------------------------------------------------
