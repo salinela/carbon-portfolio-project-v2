@@ -537,6 +537,35 @@ def to_month_end(features_long) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+def forward_return_label(con, horizon=1, kind="log", start=None, end=None):
+    """
+    Minimal month-end forward-return TARGET for EDA (feature-vs-target work).
+    At each month-end t, the label is the return realised over the NEXT `horizon`
+    months -- i.e. what the trailing features at t should predict.
+
+    kind='log' (default) matches the modelling convention; 'arith' available too.
+    This is price return (ex-dividend), aligned to the same month-end grid as the
+    features. The PRODUCTION label (total return incl. dividends, plus the CV
+    embargo) is built later in modeling.py -- this is only for exploratory work.
+
+    Returns long: company_id, date, fwd_ret.  Merge onto the feature panel on
+    (company_id, date). Rows in the last `horizon` months are NaN (no future) and
+    dropped.
+    """
+    close = load_prices(con, start, end, adjust=True)["close"]
+    m = close.reindex(month_end_dates(close.index))          # month-end wide close
+    if kind == "log":
+        fwd = np.log(m).shift(-horizon) - np.log(m)          # shift(-h): pull FUTURE back to t
+    elif kind == "arith":
+        fwd = m.shift(-horizon) / m - 1.0
+    else:
+        raise ValueError("kind must be 'log' or 'arith'")
+    s = fwd.stack()
+    s.index = s.index.set_names(["date", "company_id"])
+    out = s.rename("fwd_ret").reset_index()
+    out["date"] = out["date"].dt.strftime("%Y-%m-%d")
+    return out[["company_id", "date", "fwd_ret"]].dropna(subset=["fwd_ret"])
+
 # Example (notebook orchestration):
 #   import sqlite3, pandas as pd
 #   con = sqlite3.connect("carbon.db")
