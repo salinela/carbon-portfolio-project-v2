@@ -75,38 +75,30 @@ SUBUNIT = {"GBp": ("GBP", 100.0), "ZAc": ("ZAR", 100.0), "ILA": ("ILS", 100.0)}
 # ===========================================================================
 # 1. LOADERS + PRICE ADJUSTMENT
 # ===========================================================================
-def load_raw_prices(con, start=None, end=None) -> pd.DataFrame:
-    """Raw OHLCV in local currency (long).
-    start/end are ISO 'YYYY-MM-DD'.
-    Called in load_prices() as helper
-    """
-
+def load_raw_prices(con, start=None, end=None, companies=None) -> pd.DataFrame:
+    """Raw OHLCV in local currency (long). start/end are ISO 'YYYY-MM-DD'.
+    companies: optional list of company_id to restrict to (used by batched build)."""
     q = "SELECT company_id, date, open, high, low, close, volume, currency FROM prices"
-    clauses = []
+    clauses, params = [], []
     if start:
-        clauses.append(f"date >= '{start}'")
+        clauses.append("date >= ?"); params.append(start)
     if end:
-        clauses.append(f"date <= '{end}'")
+        clauses.append("date <= ?"); params.append(end)
+    if companies is not None:
+        clauses.append(f"company_id IN ({','.join('?' * len(companies))})")
+        params.extend(companies)
     if clauses:
         q += " WHERE " + " AND ".join(clauses)
-    df = pd.read_sql(q, con, parse_dates=["date"])
+    df = pd.read_sql(q, con, params=params or None, parse_dates=["date"])
     return df.sort_values(["company_id", "date"]).reset_index(drop=True)
 
 
 def _split_factors(con, companies, dates_index) -> pd.DataFrame | None:
     """
-    objective: we rescale old prices so the series is continuous through the splits
-    e.g., [100,100,50,50] to [50,50,50,50] via F = [2,2,1,1]
-
     Wide frame (date x company) of the cumulative FUTURE split factor F[t] =
-    product of split ratios strictly after t. 
-    
-    adj_price[t] = raw[t] / F[t]
-
-    Called in load_prices() as helper
+    product of split ratios strictly after t. adj_price[t] = raw[t] / F[t]
+    makes the series continuous backward through splits. None if no splits.
     """
-
-    # read split actions from corporate_actions table:
     sp = pd.read_sql(
         "SELECT company_id, date, value AS ratio FROM corporate_actions "
         "WHERE action_type = 'split'",
@@ -114,29 +106,23 @@ def _split_factors(con, companies, dates_index) -> pd.DataFrame | None:
     )
     if sp.empty:
         return None
-    
-    # wide table
     ratio = (sp.pivot_table(index="date", columns="company_id", values="ratio", aggfunc="prod")
-               .reindex(index=dates_index, columns=companies)) # add all dates within time range as rows
-    
-    # Derive F
-    ratio = ratio.fillna(1.0) # unsplit days have split of 1.0 
-
-    # F[t] = product of ratios for split dates > t  == reverse-cumprod, shifted up one row and then fillna with 1
+               .reindex(index=dates_index, columns=companies))
+    ratio = ratio.fillna(1.0)
+    # F[t] = product of ratios for split dates > t  == reverse-cumprod, shifted up one row
     incl = ratio.iloc[::-1].cumprod().iloc[::-1]      # product over [t .. last] inclusive
     future = incl.shift(-1).fillna(1.0)               # strictly after t
-
     return future
 
 
-def load_prices(con, start=None, end=None, adjust=True) -> dict[str, pd.DataFrame]:
+def load_prices(con, start=None, end=None, adjust=True, companies=None) -> dict[str, pd.DataFrame]:
     """
     Return split-adjusted WIDE OHLCV frames plus currency, ready for vectorised
     rolling. Keys: 'open','high','low','close','volume','currency'(Series).
     Volume is adjusted inversely to price so dollar-volume stays continuous.
-    Called in main orchestator
+    companies: optional list to restrict to (batched build).
     """
-    raw = load_raw_prices(con, start, end)
+    raw = load_raw_prices(con, start, end, companies)
     dates = pd.DatetimeIndex(sorted(raw["date"].unique()))
     comps = sorted(raw["company_id"].unique())
 
@@ -148,8 +134,6 @@ def load_prices(con, start=None, end=None, adjust=True) -> dict[str, pd.DataFram
         F = _split_factors(con, comps, dates)
         if F is not None:
             for c in ("open", "high", "low", "close"):
-
-                # adjust raw prices based on derived split factors table:
                 wide[c] = wide[c] / F
             wide["volume"] = wide["volume"] * F      # shares scale up on a split
     wide["currency"] = ccy
@@ -157,21 +141,14 @@ def load_prices(con, start=None, end=None, adjust=True) -> dict[str, pd.DataFram
 
 
 def load_fx(con) -> pd.DataFrame | None:
-    """
-    Called in main orchestrator
-    """
     fx = pd.read_sql("SELECT date, currency, rate_per_eur FROM fx_rates", con, parse_dates=["date"])
     if fx.empty:
         return None
     return fx.pivot(index="date", columns="currency", values="rate_per_eur")
 
-# Market Factor subsection:
-def _load_factor_level(con, factor, price_type="close") -> pd.Series | None:
-    """Raw level series for one market_factors factor. None if absent.
-    Called in load_market_return() and load_factor_return() as helper
-    """
 
-    # need to specify market factor type (brent, eua, natgas, stoxx600, us10y, vix, wti) and price type (OHLVC+ adjusted Close)
+def _load_factor_level(con, factor, price_type="close") -> pd.Series | None:
+    """Raw level series for one market_factors factor. None if absent."""
     mk = pd.read_sql(
         "SELECT date, price FROM market_factors WHERE factor = ? AND price_type = ? ORDER BY date",
         con, params=(factor, price_type), parse_dates=["date"],
@@ -188,8 +165,6 @@ def _factor_return(level, kind, index=None):
     kind='diff' -> first difference in native units (yield series: us10y)
     Level is calendar-aligned and ffilled BEFORE transforming so a holiday gap
     doesn't null a whole rolling window.
-
-    Called in load_market_return() as helper
     """
     if level is None:
         return None
@@ -200,11 +175,7 @@ def _factor_return(level, kind, index=None):
 
 def load_market_return(con, factor="stoxx600", price_type="close", index=None) -> pd.Series | None:
     """Daily market (price-index) log return; None if the factor is absent."""
-
-
     lvl = _load_factor_level(con, factor, price_type)
-
-
     return None if lvl is None else _factor_return(lvl, "log", index).rename("market_ret")
 
 
@@ -253,14 +224,13 @@ def log_returns(close_wide) -> pd.DataFrame:
 # ===========================================================================
 # 3. INDICATORS  (each returns one or more WIDE frames, date x company)
 # ===========================================================================
-# Fraction of a rolling window that must be populated before a value is emitted (instead of full 252 trading days)
+# Fraction of a rolling window that must be populated before a value is emitted.
 # The wide pivot is built on the UNION of all firms' trading calendars, so every
 # column carries holiday-gap NaNs from other exchanges. Requiring the *full*
 # window (min_periods=_mp(w)) then makes long windows (200/252d) unsatisfiable. 0.70
 # tolerates the gaps while staying trailing-only (no leakage).
-
-
 MIN_PERIODS_FRAC = 0.70
+
 
 def _mp(w):
     """min_periods for a window of length w: a fraction of it, floor of 2."""
@@ -449,7 +419,7 @@ def f_factor_betas(ret, con, windows=None):
 # ===========================================================================
 def build_price_features(con, start=None, end=None, factor="stoxx600",
                          include_market=True, include_factor_betas=True,
-                         long_format=True, resample=None):
+                         long_format=True, resample=None, companies=None, me_dates=None):
     """
     Compute every price feature and return either a dict of wide frames or a
     tidy long DataFrame (company_id, date, signal_name, value) matching `signals`.
@@ -462,20 +432,22 @@ def build_price_features(con, start=None, end=None, factor="stoxx600",
                     dates across firms (a firm not trading on the panel month-end
                     date is NaN there and dropped), which is what the matrix wants.
 
+    companies : optional list of company_id to restrict to (used by the batched
+                driver). me_dates: optional explicit month-end DatetimeIndex so
+                every batch shares ONE grid (else each batch would derive its own).
+
     Deployment: call with a short `start` for incremental serving; the trailing
     windows need history, so pass start >= (serve_date - ~300 trading days).
+    For the full universe on limited RAM, prefer build_price_features_batched().
     """
-    px = load_prices(con, start, end, adjust=True)
+    px = load_prices(con, start, end, adjust=True, companies=companies)
     close, high, low = px["close"], px["high"], px["low"]
     volume, ccy = px["volume"], px["currency"]
     logclose = np.log(close)
     ret = log_returns(close)
     fx_wide = load_fx(con)
 
-    # initialize empty dictionary
     feats: dict[str, pd.DataFrame] = {}
-
-    # update dictionary with specific technical indicator functions and relevant input params:
     feats.update(f_trend(close))
     feats.update(f_momentum(logclose))
     feats.update(f_realized_vol(ret))
@@ -486,14 +458,13 @@ def build_price_features(con, start=None, end=None, factor="stoxx600",
     feats.update(f_williams(close, high, low))
     feats.update(f_bollinger(close))
     feats.update(f_macd(close))
-
     if include_market:
         feats.update(f_market(ret, load_market_return(con, factor=factor, index=ret.index)))
     if include_factor_betas:
         feats.update(f_factor_betas(ret, con))
 
     if resample == "M":
-        me = month_end_dates(close.index)
+        me = me_dates if me_dates is not None else month_end_dates(close.index)
         feats = {name: wide.reindex(me) for name, wide in feats.items()}
     elif resample is not None:
         raise ValueError("resample must be None or 'M'")
@@ -508,8 +479,40 @@ def build_price_features(con, start=None, end=None, factor="stoxx600",
         parts.append(s.rename("value").reset_index().assign(signal_name=name))
     out = pd.concat(parts, ignore_index=True)
     out["date"] = out["date"].dt.strftime("%Y-%m-%d")
-    
     return out[["company_id", "date", "signal_name", "value"]].dropna(subset=["value"])
+
+
+def build_price_features_batched(con, start=None, end=None, batch_size=600,
+                                 resample="M", verbose=True, **kwargs):
+    """
+    Memory-safe full-universe build: process companies in batches and concatenate
+    the (month-end) long outputs. Peak RAM ~= one batch, not the whole universe.
+
+    Only meaningful with resample="M" (daily long across all firms is enormous).
+    One shared month-end grid is derived once from the full price calendar so
+    every batch lands on identical dates. batch_size 600 keeps the SQL IN-clause
+    under SQLite's default variable limit; lower it if RAM is very tight.
+    """
+    if resample != "M":
+        raise ValueError("batched build is intended for resample='M'")
+
+    comps = pd.read_sql("SELECT DISTINCT company_id FROM prices", con)["company_id"].tolist()
+    dcond = []
+    if start: dcond.append(f"date >= '{start}'")
+    if end:   dcond.append(f"date <= '{end}'")
+    dq = "SELECT DISTINCT date FROM prices" + (" WHERE " + " AND ".join(dcond) if dcond else "")
+    all_dates = pd.to_datetime(pd.read_sql(dq, con)["date"])
+    me = month_end_dates(all_dates)                       # ONE grid for every batch
+
+    batches = [comps[i:i + batch_size] for i in range(0, len(comps), batch_size)]
+    parts = []
+    for i, batch in enumerate(batches, 1):
+        part = build_price_features(con, start=start, end=end, resample="M",
+                                    companies=batch, me_dates=me, **kwargs)
+        parts.append(part)
+        if verbose:
+            print(f"  batch {i}/{len(batches)}  ({len(batch)} firms)  ->  {len(part):,} rows")
+    return pd.concat(parts, ignore_index=True)
 
 
 # ===========================================================================
@@ -566,8 +569,10 @@ def forward_return_label(con, horizon=1, kind="log", start=None, end=None):
     out["date"] = out["date"].dt.strftime("%Y-%m-%d")
     return out[["company_id", "date", "fwd_ret"]].dropna(subset=["fwd_ret"])
 
+
 # Example (notebook orchestration):
 #   import sqlite3, pandas as pd
 #   con = sqlite3.connect("carbon.db")
 #   month_end = build_price_features(con, start="2013-01-01", resample="M")   # modeling grid
-#   # optional persist:  month_end.to_sql("signals", con, if_exists="append", index=False)
+#   label     = forward_return_label(con)                                     # EDA target
+#   # optional persist:  month_end.to_parquet("data/processed/features_month_end.parquet")
