@@ -300,7 +300,8 @@ def f_stochastic(close, high, low):
     for n in W["stoch"]:
         ll = low.rolling(n, min_periods=_mp(n)).min()
         hh = high.rolling(n, min_periods=_mp(n)).max()
-        k = 100 * (close - ll) / (hh - ll)
+        rng = (hh - ll).replace(0, np.nan)          # flat window -> NaN, not /0 -> inf
+        k = 100 * (close - ll) / rng
         out[f"stoch_k_{n}"] = k
         out[f"stoch_d_{n}"] = k.rolling(3, min_periods=3).mean()
     return out
@@ -311,7 +312,8 @@ def f_williams(close, high, low):
     for n in W["williams"]:
         hh = high.rolling(n, min_periods=_mp(n)).max()
         ll = low.rolling(n, min_periods=_mp(n)).min()
-        out[f"williams_r_{n}"] = -100 * (hh - close) / (hh - ll)
+        rng = (hh - ll).replace(0, np.nan)          # flat window -> NaN
+        out[f"williams_r_{n}"] = -100 * (hh - close) / rng
     return out
 
 
@@ -321,12 +323,14 @@ def f_bollinger(close):
         mid = close.rolling(n, min_periods=_mp(n)).mean()
         sd = close.rolling(n, min_periods=_mp(n)).std()
         upper, lower = mid + 2 * sd, mid - 2 * sd
-        out[f"boll_pctb_{n}"] = (close - lower) / (upper - lower)   # %B, position in band
-        out[f"boll_bw_{n}"] = (upper - lower) / mid                 # bandwidth, vol proxy
+        band = (upper - lower).replace(0, np.nan)   # zero-width band (sd=0) -> NaN
+        out[f"boll_pctb_{n}"] = (close - lower) / band              # %B, position in band
+        out[f"boll_bw_{n}"] = band / mid.replace(0, np.nan)         # bandwidth, vol proxy
     return out
 
 
 def f_macd(close):
+    close_safe = close.replace(0, np.nan)           # guards exact-zero price only; see note
     out = {}
     for (fast, slow, sig) in W["macd"]:
         ema_f = close.ewm(span=fast, min_periods=_mp(slow)).mean()
@@ -334,8 +338,8 @@ def f_macd(close):
         macd = ema_f - ema_s
         signal = macd.ewm(span=sig, min_periods=_mp(slow)).mean()
         tag = f"{fast}_{slow}_{sig}"
-        out[f"macd_{tag}"] = macd / close                          # normalised by price
-        out[f"macd_hist_{tag}"] = (macd - signal) / close
+        out[f"macd_{tag}"] = macd / close_safe                     # normalised by price
+        out[f"macd_hist_{tag}"] = (macd - signal) / close_safe
     return out
 
 
@@ -479,6 +483,7 @@ def build_price_features(con, start=None, end=None, factor="stoxx600",
         parts.append(s.rename("value").reset_index().assign(signal_name=name))
     out = pd.concat(parts, ignore_index=True)
     out["date"] = out["date"].dt.strftime("%Y-%m-%d")
+    out["value"] = out["value"].replace([np.inf, -np.inf], np.nan)   # backstop: no inf survives
     return out[["company_id", "date", "signal_name", "value"]].dropna(subset=["value"])
 
 
@@ -568,6 +573,57 @@ def forward_return_label(con, horizon=1, kind="log", start=None, end=None):
     out = s.rename("fwd_ret").reset_index()
     out["date"] = out["date"].dt.strftime("%Y-%m-%d")
     return out[["company_id", "date", "fwd_ret"]].dropna(subset=["fwd_ret"])
+
+
+# ===========================================================================
+# 6. OPTIONAL POST-PROCESSING FILTERS  (off by default -- prune on demand)
+# ===========================================================================
+def eligible_ids(con, statuses=("mapped_loaded",), extra_where=None):
+    """
+    company_ids passing symbol_coverage eligibility. Default keeps status
+    'mapped_loaded'. If your symbol_coverage has density / n_real columns, pass
+    e.g. extra_where="AND density >= 0.90 AND n_real >= 250".
+    Use with filter_panel(panel, keep_ids=eligible_ids(con)).
+    """
+    q = "SELECT company_id FROM symbol_coverage WHERE status IN ({})".format(
+        ",".join("?" * len(statuses)))
+    if extra_where:
+        q += " " + extra_where
+    return pd.read_sql(q, con, params=list(statuses))["company_id"].tolist()
+
+
+def filter_panel(panel, keep_ids=None, drop_ids=None, max_missing_frac=None,
+                 drop_inf_firms=True, verbose=True):
+    """
+    OPTIONAL post-processing on the WIDE panel (index=[company_id, date], one
+    column per signal). Nothing is removed unless you ask -- keeps the full
+    universe by default so you can prune only when a run needs it.
+
+    keep_ids         : keep only these company_ids (e.g. eligible_ids(con))
+    drop_ids         : drop these company_ids
+    max_missing_frac : drop a firm whose mean missingness across signals exceeds this
+    drop_inf_firms   : drop any firm that still has an inf cell (backstop; the
+                       denominator guards should already prevent this)
+    """
+    cid = panel.index.get_level_values("company_id")
+    keep = pd.Series(True, index=panel.index)
+    log = {}
+    if keep_ids is not None:
+        m = cid.isin(set(keep_ids)); log["not_in_keep_ids"] = int((~m).sum()); keep &= m
+    if drop_ids is not None:
+        m = ~cid.isin(set(drop_ids)); log["in_drop_ids"] = int((~m).sum()); keep &= m
+    if drop_inf_firms:
+        inf_firms = pd.Index(cid[np.isinf(panel.to_numpy()).any(axis=1)]).unique()
+        m = ~cid.isin(set(inf_firms)); log["inf_firms"] = len(inf_firms); keep &= m
+    if max_missing_frac is not None:
+        firm_miss = panel.isna().mean(axis=1).groupby(cid).mean()
+        bad = firm_miss[firm_miss > max_missing_frac].index
+        m = ~cid.isin(set(bad)); log["too_missing"] = len(bad); keep &= m
+    out = panel[keep]
+    if verbose:
+        n0, n1 = cid.nunique(), out.index.get_level_values("company_id").nunique()
+        print(f"filter_panel {log} | firms {n0}->{n1} | rows {len(panel):,}->{len(out):,}")
+    return out
 
 
 # Example (notebook orchestration):
