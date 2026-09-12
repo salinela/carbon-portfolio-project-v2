@@ -529,7 +529,7 @@ def month_end_dates(index) -> pd.DatetimeIndex:
     last = pd.Series(idx, index=idx).groupby(idx.to_period("M")).max()
     return pd.DatetimeIndex(last.values)
 
-
+# archived
 def to_month_end(features_long) -> pd.DataFrame:
     """
     Long-format month-end sampler: last obs per (company, signal, month).
@@ -582,7 +582,7 @@ def forward_return_label(con, horizon=1, kind="log", start=None, end=None):
 
     # re-sample month-end close:
     m = month_end_close(close)
-    
+
     if kind == "log":
         fwd = np.log(m).shift(-horizon) - np.log(m)          # shift(-h): pull FUTURE back to t
     elif kind == "arith":

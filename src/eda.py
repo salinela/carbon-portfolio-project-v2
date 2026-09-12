@@ -187,7 +187,6 @@ def tier_portfolio_returns(panel_with_tier, ret_col="fwd_ret",
 
 
 # Detection scan (flags any month-end where label coverage is abnormally low relative to features):
-
 def label_coverage_scan(features_long, label_long, flag_frac=0.5):
     """Per month-end: firms with features vs firms with a non-NaN label. Flags
     months whose label/feature ratio is < flag_frac of the median ratio.
