@@ -162,8 +162,6 @@ def attach_tier_asof(panel, firm_year, tier_col="carbon_tier"):
 
     # assigning financial year:
     p["_fy"] = np.where(dt.dt.month >= 7, dt.dt.year - 1, dt.dt.year - 2) # np.where(condition, output if true, output if false)
-
-    # 
     key = firm_year[["company_id", "year", tier_col]].rename(columns={"year": "_fy"})
     n0 = len(p)
     out = p.merge(key, on=["company_id", "_fy"], how="left")
@@ -186,3 +184,17 @@ def tier_portfolio_returns(panel_with_tier, ret_col="fwd_ret",
     mean = mean.where(n >= min_names)
     mean.index = pd.to_datetime(mean.index)
     return mean.sort_index()
+
+
+# Detection scan (flags any month-end where label coverage is abnormally low relative to features):
+
+def label_coverage_scan(features_long, label_long, flag_frac=0.5):
+    """Per month-end: firms with features vs firms with a non-NaN label. Flags
+    months whose label/feature ratio is < flag_frac of the median ratio.
+    Note: the final `horizon` month(s) legitimately have no label (no future)."""
+    f = features_long.groupby("date")["company_id"].nunique().rename("n_features")
+    l = label_long.groupby("date")["company_id"].nunique().rename("n_label")
+    cov = pd.concat([f, l], axis=1).fillna(0)
+    cov["ratio"] = cov["n_label"] / cov["n_features"].where(cov["n_features"] > 0)
+    cov["flag"] = cov["ratio"] < flag_frac * cov["ratio"].median()
+    return cov.sort_values("ratio")

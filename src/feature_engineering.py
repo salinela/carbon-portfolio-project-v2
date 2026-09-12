@@ -524,7 +524,7 @@ def build_price_features_batched(con, start=None, end=None, batch_size=600,
 # 5. MONTH-END SAMPLERS  (feed the matrix assembler in the modeling step)
 # ===========================================================================
 def month_end_dates(index) -> pd.DatetimeIndex:
-    """The last actual trading date in each calendar month across the panel."""
+    """The last actual trading date in each calendar month across the panel (note the )"""
     idx = pd.DatetimeIndex(index)
     last = pd.Series(idx, index=idx).groupby(idx.to_period("M")).max()
     return pd.DatetimeIndex(last.values)
@@ -544,6 +544,20 @@ def to_month_end(features_long) -> pd.DataFrame:
     out["date"] = out["date"].dt.strftime("%Y-%m-%d")
     return out.reset_index(drop=True)
 
+def month_end_close(close, me_dates=None):
+    """Wide daily close (dates x company) -> month-end close using each firm's
+    LAST VALID in-month observation. Fixes holiday/gap month-ends: a firm that
+    didn't trade on the grid date (e.g. Good Friday) keeps its most recent price
+    instead of NaN. Relabeled to the existing month-end grid so it stays
+    join-compatible with features."""
+    close = close.sort_index()
+    m = close.resample("ME").last()                 # per-firm last non-null per month
+    m.index = m.index.to_period("M")
+    me = month_end_dates(close.index) if me_dates is None else pd.DatetimeIndex(me_dates)
+    me_by_period = pd.Series(me.values, index=me.to_period("M"))
+    m = m.reindex(me_by_period.index)               # grid months, grid order
+    m.index = me_by_period.values                   # relabel to actual grid dates
+    return m
 
 def forward_return_label(con, horizon=1, kind="log", start=None, end=None):
     """
@@ -560,8 +574,15 @@ def forward_return_label(con, horizon=1, kind="log", start=None, end=None):
     (company_id, date). Rows in the last `horizon` months are NaN (no future) and
     dropped.
     """
+    # load closing price:
     close = load_prices(con, start, end, adjust=True)["close"]
-    m = close.reindex(month_end_dates(close.index))          # month-end wide close
+
+    # archived (month-end dates may have holiday)
+    # m = close.reindex(month_end_dates(close.index))          # month-end wide close
+
+    # re-sample month-end close:
+    m = month_end_close(close)
+    
     if kind == "log":
         fwd = np.log(m).shift(-horizon) - np.log(m)          # shift(-h): pull FUTURE back to t
     elif kind == "arith":
