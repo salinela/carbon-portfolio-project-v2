@@ -544,57 +544,40 @@ def to_month_end(features_long) -> pd.DataFrame:
     out["date"] = out["date"].dt.strftime("%Y-%m-%d")
     return out.reset_index(drop=True)
 
-def month_end_close(close, me_dates=None):
-    """Wide daily close (dates x company) -> month-end close using each firm's
-    LAST VALID in-month observation. Fixes holiday/gap month-ends: a firm that
-    didn't trade on the grid date (e.g. Good Friday) keeps its most recent price
-    instead of NaN. Relabeled to the existing month-end grid so it stays
-    join-compatible with features."""
-    close = close.sort_index()
-    m = close.resample("ME").last()                 # per-firm last non-null per month
-    m.index = m.index.to_period("M")
-    me = month_end_dates(close.index) if me_dates is None else pd.DatetimeIndex(me_dates)
-    me_by_period = pd.Series(me.values, index=me.to_period("M"))
-    m = m.reindex(me_by_period.index)               # grid months, grid order
-    m.index = me_by_period.values                   # relabel to actual grid dates
-    return m
+def month_end_close(con, start=None, end=None):
+    """Per-firm month-end close: each (company, month) -> that firm's LAST TRADING
+    DAY in the month, with its actual date and adjusted close. The single month-end
+    rule; features and labels both follow it, so their grids align by construction.
+    Long: company_id, date, close."""
+    close = load_prices(con, start, end, adjust=True)["close"]
+    long = close.stack().rename("close").reset_index()
+    long.columns = ["date", "company_id", "close"]
+    long = long.dropna(subset=["close"])
+    long["date"] = pd.to_datetime(long["date"])
+    long["ym"] = long["date"].dt.to_period("M")
+    idx = long.groupby(["company_id", "ym"])["date"].idxmax()      # last day per firm-month
+    return long.loc[idx, ["company_id", "date", "close"]].sort_values(["company_id", "date"])
 
 def forward_return_label(con, horizon=1, kind="log", start=None, end=None):
-    """
-    Minimal month-end forward-return TARGET for EDA (feature-vs-target work).
-    At each month-end t, the label is the return realised over the NEXT `horizon`
-    months -- i.e. what the trailing features at t should predict.
-
-    kind='log' (default) matches the modelling convention; 'arith' available too.
-    This is price return (ex-dividend), aligned to the same month-end grid as the
-    features. The PRODUCTION label (total return incl. dividends, plus the CV
-    embargo) is built later in modeling.py -- this is only for exploratory work.
-
-    Returns long: company_id, date, fwd_ret.  Merge onto the feature panel on
-    (company_id, date). Rows in the last `horizon` months are NaN (no future) and
-    dropped.
-    """
-    # load closing price:
-    close = load_prices(con, start, end, adjust=True)["close"]
-
-    # archived (month-end dates may have holiday)
-    # m = close.reindex(month_end_dates(close.index))          # month-end wide close
-
-    # re-sample month-end close:
-    m = month_end_close(close)
-
+    """Forward return per firm on the per-firm month-end grid. Self-contained.
+    Long: company_id, date, fwd_ret."""
+    me = month_end_close(con, start, end)
     if kind == "log":
-        fwd = np.log(m).shift(-horizon) - np.log(m)          # shift(-h): pull FUTURE back to t
+        me["fwd_ret"] = me.groupby("company_id")["close"].transform(
+            lambda s: np.log(s).shift(-horizon) - np.log(s))
     elif kind == "arith":
-        fwd = m.shift(-horizon) / m - 1.0
+        me["fwd_ret"] = me.groupby("company_id")["close"].transform(
+            lambda s: s.shift(-horizon) / s - 1.0)
     else:
         raise ValueError("kind must be 'log' or 'arith'")
-    s = fwd.stack()
-    s.index = s.index.set_names(["date", "company_id"])
-    out = s.rename("fwd_ret").reset_index()
-    out["date"] = out["date"].dt.strftime("%Y-%m-%d")
-    return out[["company_id", "date", "fwd_ret"]].dropna(subset=["fwd_ret"])
 
+    # guard: only if the next month-end row is exactly `horizon` months ahead
+    me["_m"] = me["date"].dt.year * 12 + me["date"].dt.month
+    nxt = me.groupby("company_id")["_m"].shift(-horizon)
+    me.loc[(nxt - me["_m"]) != horizon, "fwd_ret"] = np.nan
+
+    me["date"] = me["date"].dt.strftime("%Y-%m-%d")
+    return me[["company_id", "date", "fwd_ret"]].dropna(subset=["fwd_ret"])
 
 # ===========================================================================
 # 6. OPTIONAL POST-PROCESSING FILTERS  (off by default -- prune on demand)
