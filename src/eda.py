@@ -6,6 +6,11 @@ side effects, so the same functions serve the notebook and the Streamlit tabs.
 import numpy as np
 import pandas as pd
 
+import plotly.express as px 
+
+
+_TIER_ORDER = ["ets_low", "ets_medium", "ets_high",
+               "non_ets_low", "non_ets_medium", "non_ets_high"]
 
 # Phase 0: Loading data
 def build_meta(con):
@@ -91,9 +96,7 @@ def build_firm_year(con):
     return fy, diag
 
 
-# Phase 1:
-
-## section A: tiering company emissions intensity status (low, medium and high):
+# Phase 1: section A - tiering company emissions intensity status (low, medium and high):
 
 def _tercile(g, min_n=6):
     """Rank-based terciles within a group; NaN if fewer than min_n non-nulls.
@@ -139,7 +142,7 @@ def compute_tiers(firm_year, nace1, intensity_col="intensity", min_n=6):
     return fy, diag
 
 
-# Section B — carbon tier-based portfolio return helper
+# Phase 1: Section B — carbon tier-based portfolio return helper
 
 """
 tiers are annual (fiscal year), the panel is monthly;
@@ -253,3 +256,69 @@ def assert_month_end(df, date_col="date"):
     bad = d[d != d + pd.offsets.MonthEnd(0)]
 
     assert bad.empty, f"{len(bad)} non-month-end dates, e.g. {bad.iloc[0].date()}"
+
+
+# Phase 1: Section C - Composition Count
+
+def firm_year_presence(panel_t, id_col="company_id", date_col="date"):
+    out = panel_t.loc[:, [id_col, date_col]].copy()
+    out["year"] = pd.to_datetime(out[date_col]).dt.year
+    return out.loc[:, [id_col, "year"]].drop_duplicates().reset_index(drop=True)
+
+def company_attrs(meta, fy, id_col="company_id"):
+    m_cols = [c for c in ["universe", "sector", "country", "listing_status"] if c in meta.columns]
+    base = meta.loc[:, [id_col] + m_cols].drop_duplicates(id_col)
+    f_cols = [c for c in ["source", "nace1"] if c in fy.columns]
+    if f_cols:
+        fy_collapsed = fy.sort_values(id_col).groupby(id_col, as_index=False)[f_cols].first()
+        base = base.merge(fy_collapsed, on=id_col, how="left")
+    return base
+
+def composition_counts(panel_t, attr_df=None, attr=None, tier=False,
+                       by="year", min_firms=5,
+                       id_col="company_id", date_col="date", tier_col="carbon_tier"):
+    if attr is not None and tier:
+        raise ValueError("Set only one of attr= or tier=, not both.")
+    if tier:
+        base = panel_t.loc[:, [id_col, date_col, tier_col]].copy()
+        base["year"] = pd.to_datetime(base[date_col]).dt.year
+        base = base.loc[:, [id_col, "year", tier_col]].drop_duplicates()
+        group_col = tier_col
+    else:
+        base = firm_year_presence(panel_t, id_col=id_col, date_col=date_col)
+        group_col = None
+        if attr is not None:
+            if attr_df is None:
+                raise ValueError("attr= requires attr_df=.")
+            base = base.merge(attr_df.loc[:, [id_col, attr]], on=id_col, how="left")
+            group_col = attr
+    keys = [] if by == "pooled" else ["year"]
+    if group_col is not None:
+        keys = keys + [group_col]
+    if keys:
+        counts = base.groupby(keys)[id_col].nunique().reset_index(name="n_firms")
+    else:
+        counts = pd.DataFrame({"n_firms": [base[id_col].nunique()]})
+    counts["below_min"] = counts["n_firms"] < min_firms
+    if group_col == tier_col:
+        present = set(counts[group_col])
+        order = [t for t in _TIER_ORDER if t in present]
+        extra = [t for t in counts[group_col].dropna().unique() if t not in order]
+        counts[group_col] = pd.Categorical(counts[group_col], categories=order + extra, ordered=True)
+    sort_keys = (["year"] if by != "pooled" else []) + ([group_col] if group_col else [])
+    if sort_keys and all(k in counts.columns for k in sort_keys):
+        counts = counts.sort_values(sort_keys).reset_index(drop=True)
+    return counts
+
+def sparse_cells(counts, min_firms=5):
+    return counts.loc[counts["n_firms"] < min_firms].reset_index(drop=True)
+
+def plot_composition(counts, group=None, by="year", normalize=False, title=None):
+    barnorm = "fraction" if (normalize and group is not None) else None
+    if by == "pooled":
+        fig = px.bar(counts, y="n_firms") if group is None else px.bar(counts, x=group, y="n_firms", color=group)
+    else:
+        fig = px.bar(counts, x="year", y="n_firms", color=group, barmode="stack", barnorm=barnorm)
+    fig.update_layout(title=title, legend_title=group, bargap=0.15,
+                      yaxis_title="share of firms" if barnorm else "distinct firms")
+    return fig
