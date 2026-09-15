@@ -186,7 +186,7 @@ def tier_portfolio_returns(panel_with_tier, ret_col="fwd_ret",
     return mean.sort_index()
 
 
-# Detection scan (flags any month-end where label coverage is abnormally low relative to features):
+##----- Detection scan (flags any month-end where label coverage is abnormally low relative to features):
 def label_coverage_scan(features_long, label_long, flag_frac=0.5):
     """Per month-end: firms with features vs firms with a non-NaN label. Flags
     months whose label/feature ratio is < flag_frac of the median ratio.
@@ -197,3 +197,59 @@ def label_coverage_scan(features_long, label_long, flag_frac=0.5):
     cov["ratio"] = cov["n_label"] / cov["n_features"].where(cov["n_features"] > 0)
     cov["flag"] = cov["ratio"] < flag_frac * cov["ratio"].median()
     return cov.sort_values("ratio")
+
+def probe_missing_month(panel_t, dates, tier_col="carbon_tier", ret_col="fwd_ret"):
+    """For each date, localize why tier returns are missing: compare firms that
+    carry a REAL tier vs firms that also have a non-NaN forward return.
+      tiers intact but returns collapsed -> label gap (holiday / exchange-divergence)
+      tiers themselves sparse            -> emissions/tier coverage gap
+    Returns a per-date diagnostic frame."""
+    p = panel_t.reset_index()
+    p["date"] = pd.to_datetime(p["date"]).dt.strftime("%Y-%m-%d")
+    want = {pd.to_datetime(d).strftime("%Y-%m-%d") for d in dates}
+    sub = p[p["date"].isin(want)].copy()
+
+    real_tier = sub[tier_col].notna() & ~sub[tier_col].astype(str).str.endswith("untiered")
+    has_ret = sub[ret_col].notna()
+
+    def _n(mask):
+        return sub[mask].groupby("date")["company_id"].nunique()
+
+    out = pd.DataFrame({
+        "n_firms":        sub.groupby("date")["company_id"].nunique(),
+        "n_tier":         _n(real_tier),
+        "n_ret":          _n(has_ret),
+        "n_tier_and_ret": _n(real_tier & has_ret),
+    }).fillna(0).astype(int)
+
+    out["tier_rate"]      = (out["n_tier"] / out["n_firms"].replace(0, np.nan)).round(3)
+    out["ret_given_tier"] = (out["n_tier_and_ret"] / out["n_tier"].replace(0, np.nan)).round(3)
+
+    def _dx(r):
+        if r["tier_rate"] < 0.5:
+            return "tier/coverage gap"
+        if pd.notna(r["ret_given_tier"]) and r["ret_given_tier"] < 0.5:
+            return "label/return gap (holiday?)"
+        return "ok"
+    out["diagnosis"] = out.apply(_dx, axis=1)
+    return out.sort_index()
+
+## ---- Snap features to the same month-end date:
+def snap_to_month_end(df, date_col="date"):
+    """Canonical monthly key: snap each date to its calendar month-end so features
+    and labels join on the MONTH, not the physical trading day. Value-preserving —
+    only relabels the stamp. Bake into both builders for deploy."""
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col]) + pd.offsets.MonthEnd(0)
+    return df
+
+## ---- Check if the all month-end dates fall to calendar month-end:
+def assert_month_end(df, date_col="date"):
+    """Invariant guard: every date must already be a calendar month-end. Fails
+    loudly if a batch skipped the snap (which would re-introduce holiday splits)."""
+    d = pd.to_datetime(df[date_col])
+
+    # extract bad dates (if add the same day to the day, it should not be different)
+    bad = d[d != d + pd.offsets.MonthEnd(0)]
+
+    assert bad.empty, f"{len(bad)} non-month-end dates, e.g. {bad.iloc[0].date()}"
