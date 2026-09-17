@@ -277,6 +277,8 @@ def company_attrs(meta, fy, id_col="company_id"):
 def composition_counts(panel_t, attr_df=None, attr=None, tier=False,
                        by="year", min_firms=5,
                        id_col="company_id", date_col="date", tier_col="carbon_tier"):
+    
+    #
     if attr is not None and tier:
         raise ValueError("Set only one of attr= or tier=, not both.")
     if tier:
@@ -292,7 +294,9 @@ def composition_counts(panel_t, attr_df=None, attr=None, tier=False,
                 raise ValueError("attr= requires attr_df=.")
             base = base.merge(attr_df.loc[:, [id_col, attr]], on=id_col, how="left")
             group_col = attr
+    
     keys = [] if by == "pooled" else ["year"]
+
     if group_col is not None:
         keys = keys + [group_col]
     if keys:
@@ -313,12 +317,42 @@ def composition_counts(panel_t, attr_df=None, attr=None, tier=False,
 def sparse_cells(counts, min_firms=5):
     return counts.loc[counts["n_firms"] < min_firms].reset_index(drop=True)
 
-def plot_composition(counts, group=None, by="year", normalize=False, title=None):
-    barnorm = "fraction" if (normalize and group is not None) else None
+
+# callable composition plots:
+_TIER_COLORS = {
+    "ets_low": "#9ecae1", "ets_medium": "#4292c6", "ets_high": "#08519c",
+    "non_ets_low": "#a1d99b", "non_ets_medium": "#41ab5d", "non_ets_high": "#006d2c",
+}
+
+def plot_composition(counts, group=None, by="year", normalize=False,
+                     title=None, top_n=None, horizontal=False):
+    counts = counts.copy()
+    cmap = _TIER_COLORS if group == "carbon_tier" else None
     if by == "pooled":
-        fig = px.bar(counts, y="n_firms") if group is None else px.bar(counts, x=group, y="n_firms", color=group)
+        if group is not None and top_n is not None:
+            keep = counts.groupby(group)["n_firms"].sum().nlargest(top_n).index
+            counts = counts[counts[group].isin(keep)]
+        counts = counts.sort_values("n_firms", ascending=horizontal)
+        if group is None:
+            fig = px.bar(counts, y="n_firms", text="n_firms")
+        elif horizontal:
+            fig = px.bar(counts, x="n_firms", y=group, color=group, orientation="h",
+                         text="n_firms", color_discrete_map=cmap)
+        else:
+            fig = px.bar(counts, x=group, y="n_firms", color=group,
+                         text="n_firms", color_discrete_map=cmap)
     else:
-        fig = px.bar(counts, x="year", y="n_firms", color=group, barmode="stack", barnorm=barnorm)
-    fig.update_layout(title=title, legend_title=group, bargap=0.15,
-                      yaxis_title="share of firms" if barnorm else "distinct firms")
+        fig = px.bar(counts, x="year", y="n_firms", color=group, barmode="stack",
+                     color_discrete_map=cmap,
+                     text="n_firms" if group is None else None)
+        if normalize and group is not None:
+            fig.update_layout(barnorm="fraction")     # <-- the fix (layout prop, not a px.bar arg)
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    fig.update_layout(title=title, template="plotly_white", legend_title=group,
+                      bargap=0.15, margin=dict(t=60, r=20, b=40, l=40),
+                      legend=dict(orientation="h", y=-0.18),
+                      yaxis_title=("share of firms" if (normalize and group and by == "year")
+                                   else "distinct firms"))
+    if horizontal and by == "pooled":
+        fig.update_layout(xaxis_title="distinct firms", yaxis_title=None)
     return fig
