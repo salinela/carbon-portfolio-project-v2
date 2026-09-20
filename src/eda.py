@@ -129,16 +129,16 @@ _SECTION_LABELS = {
 }
 
 def nace_division(code):
-    """
-    Objective: extracts a 2-digit NACE division code from various formats of NACE group
-
-    2-digit division from a NACE class/group code, robust to int/str storage,
-    dotted form (46.31), and stripped leading zeros (int 111 -> '01')."""
-
-    d = re.sub(r"\D", "", str(code)) if code is not None else "" # Removes all non-digit characters (\D) from the string version of the code
+    """2-digit division from a NACE code. Robust to int/str/float storage,
+    dotted form (46.31), and stripped leading zeros (111 or 111.0 -> '01')."""
+    if code is None:
+        return None
+    s = str(code).split(".")[0]          # drop float's trailing '.0' (111.0 -> 111)
+    d = re.sub(r"\D", "", s)
     if not d:
         return None
-    return d.zfill(2) if len(d) <= 2 else d.zfill(4)[:2] # Pads short strings to 2 digits, or takes the first 2 digits of longer 4-digit codes.git
+    return d.zfill(2) if len(d) <= 2 else d.zfill(4)[:2]
+
 
 def nace_section(code):
     """Section letter (A-U) for a NACE code, or None if the division is a gap/invalid."""
