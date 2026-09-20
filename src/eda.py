@@ -266,7 +266,7 @@ def firm_year_presence(panel_t, id_col="company_id", date_col="date"):
     return out.loc[:, [id_col, "year"]].drop_duplicates().reset_index(drop=True)
 
 def company_attrs(meta, fy, id_col="company_id"):
-    m_cols = [c for c in ["universe", "sector", "country", "listing_status", "sector", "orbis_nace_code", "orbis_nace_desc"] if c in meta.columns]
+    m_cols = [c for c in ["universe", "sector", "country", "listing_status", "orbis_nace_code", "orbis_nace_desc"] if c in meta.columns]
     base = meta.loc[:, [id_col] + m_cols].drop_duplicates(id_col)
     f_cols = [c for c in ["source", "nace1"] if c in fy.columns]
     if f_cols:
