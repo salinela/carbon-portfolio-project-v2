@@ -5,8 +5,13 @@ side effects, so the same functions serve the notebook and the Streamlit tabs.
 
 import numpy as np
 import pandas as pd
+import re
 
 import plotly.express as px 
+
+
+
+
 
 
 _TIER_ORDER = ["ets_low", "ets_medium", "ets_high",
@@ -97,6 +102,51 @@ def build_firm_year(con):
 
 
 # Phase 1: section A - tiering company emissions intensity status (low, medium and high):
+
+# NACE Rev. 2 — division (2-digit) -> section (letter). Ranges are the official
+# standard; gap divisions (04, 34, 40, 44, 48, 54, 57, 67, 76, 83, 89) are unused.
+_NACE_SECTION_RANGES = [
+    ("A", 1, 3), ("B", 5, 9), ("C", 10, 33), ("D", 35, 35), ("E", 36, 39),
+    ("F", 41, 43), ("G", 45, 47), ("H", 49, 53), ("I", 55, 56), ("J", 58, 63),
+    ("K", 64, 66), ("L", 68, 68), ("M", 69, 75), ("N", 77, 82), ("O", 84, 84),
+    ("P", 85, 85), ("Q", 86, 88), ("R", 90, 93), ("S", 94, 96), ("T", 97, 98),
+    ("U", 99, 99),
+]
+_DIV_TO_SECTION = {f"{d:02d}": sec for sec, lo, hi in _NACE_SECTION_RANGES
+                   for d in range(lo, hi + 1)}
+
+_SECTION_LABELS = {
+    "A": "Agriculture, forestry & fishing", "B": "Mining & quarrying",
+    "C": "Manufacturing", "D": "Electricity & gas", "E": "Water & waste",
+    "F": "Construction", "G": "Wholesale & retail trade",
+    "H": "Transportation & storage", "I": "Accommodation & food",
+    "J": "Information & communication", "K": "Financial & insurance",
+    "L": "Real estate", "M": "Professional & technical",
+    "N": "Administrative & support", "O": "Public administration",
+    "P": "Education", "Q": "Health & social work",
+    "R": "Arts & recreation", "S": "Other services",
+    "T": "Household activities", "U": "Extraterritorial",
+}
+
+def nace_division(code):
+    """
+    Objective: extracts a 2-digit NACE division code from various formats of NACE group
+
+    2-digit division from a NACE class/group code, robust to int/str storage,
+    dotted form (46.31), and stripped leading zeros (int 111 -> '01')."""
+
+    d = re.sub(r"\D", "", str(code)) if code is not None else "" # Removes all non-digit characters (\D) from the string version of the code
+    if not d:
+        return None
+    return d.zfill(2) if len(d) <= 2 else d.zfill(4)[:2] # Pads short strings to 2 digits, or takes the first 2 digits of longer 4-digit codes.git
+
+def nace_section(code):
+    """Section letter (A-U) for a NACE code, or None if the division is a gap/invalid."""
+    return _DIV_TO_SECTION.get(nace_division(code))
+
+def nace_section_label(code):
+    sec = nace_section(code)
+    return None if sec is None else f"{sec} — {_SECTION_LABELS[sec]}"
 
 def _tercile(g, min_n=6):
     """Rank-based terciles within a group; NaN if fewer than min_n non-nulls.
