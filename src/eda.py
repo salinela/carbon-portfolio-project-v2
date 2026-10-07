@@ -316,19 +316,27 @@ def firm_year_presence(panel_t, id_col="company_id", date_col="date"):
     return out.loc[:, [id_col, "year"]].drop_duplicates().reset_index(drop=True)
 
 def company_attrs(meta, fy, id_col="company_id"):
-    m_cols = [c for c in ["universe", "sector", "country", "listing_status", "orbis_nace_code", "orbis_nace_desc","nace_categorisation"] if c in meta.columns]
+    m_cols = [c for c in ["universe", "sector", "country", "listing_status",
+                          "has_emission_data", "carbon_sample",
+                          "orbis_nace_code", "orbis_nace_desc","nace_categorisation","nace_categorisation_label"] if c in meta.columns]
     base = meta.loc[:, [id_col] + m_cols].drop_duplicates(id_col)
-    f_cols = [c for c in ["source", "nace1"] if c in fy.columns]
+    f_cols = [c for c in ["source"] if c in fy.columns]
     if f_cols:
         fy_collapsed = fy.sort_values(id_col).groupby(id_col, as_index=False)[f_cols].first()
         base = base.merge(fy_collapsed, on=id_col, how="left")
     return base
 
-def composition_counts(panel_t, attr_df=None, attr=None, tier=False,
-                       by="year", min_firms=5,
+# all-purpose count function: tier/attr/total x year/pooled
+def composition_counts(panel_t,
+                       attr_df=None, # df for yearly static attribute 
+                       attr=None, # count by 
+                       tier=False,
+                       by="year", # pooled if wanna add across years
+                       min_firms=5,
                        id_col="company_id", date_col="date", tier_col="carbon_tier"):
     
-    #
+
+    # find group_col for counting:
     if attr is not None and tier:
         raise ValueError("Set only one of attr= or tier=, not both.")
     if tier:
@@ -345,6 +353,7 @@ def composition_counts(panel_t, attr_df=None, attr=None, tier=False,
             base = base.merge(attr_df.loc[:, [id_col, attr]], on=id_col, how="left")
             group_col = attr
     
+    # yearly keys or pooled across years:
     keys = [] if by == "pooled" else ["year"]
 
     if group_col is not None:
@@ -353,7 +362,9 @@ def composition_counts(panel_t, attr_df=None, attr=None, tier=False,
         counts = base.groupby(keys)[id_col].nunique().reset_index(name="n_firms")
     else:
         counts = pd.DataFrame({"n_firms": [base[id_col].nunique()]})
+    
     counts["below_min"] = counts["n_firms"] < min_firms
+
     if group_col == tier_col:
         present = set(counts[group_col])
         order = [t for t in _TIER_ORDER if t in present]
@@ -362,46 +373,77 @@ def composition_counts(panel_t, attr_df=None, attr=None, tier=False,
     sort_keys = (["year"] if by != "pooled" else []) + ([group_col] if group_col else [])
     if sort_keys and all(k in counts.columns for k in sort_keys):
         counts = counts.sort_values(sort_keys).reset_index(drop=True)
+
     return counts
 
 def sparse_cells(counts, min_firms=5):
     return counts.loc[counts["n_firms"] < min_firms].reset_index(drop=True)
 
 
+def collapse_composition(counts, group, top_n=4, min_cats=5,
+                         others_label="Others", min_firms=5):
+    counts = counts.copy()
+    has_year = "year" in counts.columns
+    
+    # re-order from 
+    totals = (counts.groupby(group, observed=True)["n_firms"].sum()
+                    .sort_values(ascending=False))
+    ordered = list(totals.index) # Extracts the unique group names, ordered 
+    
+    #
+    if len(ordered) > min_cats: # if categories are 6 and more collapse to 4 + Others
+        keep, drop = ordered[:top_n], ordered[top_n:]
+
+        others_detail = counts[counts[group].isin(drop)].copy()
+
+        lab = counts[group].astype(object).where(counts[group].isin(keep), others_label)
+        counts = counts.assign(**{group: lab})
+        keys = (["year"] if has_year else []) + [group]
+        counts = counts.groupby(keys, observed=True)["n_firms"].sum().reset_index()
+        counts["below_min"] = counts["n_firms"] < min_firms
+        cat_order = keep + [others_label]
+    else: # if categories are 5 or lower
+        others_detail = counts.iloc[0:0].copy()
+        cat_order = ordered
+    counts[group] = pd.Categorical(counts[group], categories=cat_order, ordered=True)
+    counts = counts.sort_values((["year"] if has_year else []) + [group]).reset_index(drop=True)
+    return counts, others_detail
+
+
 # callable composition plots:
-_TIER_COLORS = {
+_TIER_COLORS = {   
     "ets_low": "#9ecae1", "ets_medium": "#4292c6", "ets_high": "#08519c",
     "non_ets_low": "#a1d99b", "non_ets_medium": "#41ab5d", "non_ets_high": "#006d2c",
 }
 
 def plot_composition(counts, group=None, by="year", normalize=False,
-                     title=None, top_n=None, horizontal=False):
-    counts = counts.copy()
+                     horizontal=False, title=None):
     cmap = _TIER_COLORS if group == "carbon_tier" else None
+    cat_order = None
+    
+    if group is not None and str(counts[group].dtype) == "category":
+        cats = list(counts[group].cat.categories)
+        cat_order = {group: cats[::-1] if horizontal else cats}  # horizontal -> biggest on top
     if by == "pooled":
-        if group is not None and top_n is not None:
-            keep = counts.groupby(group)["n_firms"].sum().nlargest(top_n).index
-            counts = counts[counts[group].isin(keep)]
-        counts = counts.sort_values("n_firms", ascending=horizontal)
         if group is None:
             fig = px.bar(counts, y="n_firms", text="n_firms")
         elif horizontal:
             fig = px.bar(counts, x="n_firms", y=group, color=group, orientation="h",
-                         text="n_firms", color_discrete_map=cmap)
+                         text="n_firms", color_discrete_map=cmap, category_orders=cat_order)
         else:
-            fig = px.bar(counts, x=group, y="n_firms", color=group,
-                         text="n_firms", color_discrete_map=cmap)
+            fig = px.bar(counts, x=group, y="n_firms", color=group, text="n_firms",
+                         color_discrete_map=cmap, category_orders=cat_order)
     else:
         fig = px.bar(counts, x="year", y="n_firms", color=group, barmode="stack",
-                     color_discrete_map=cmap,
+                     color_discrete_map=cmap, category_orders=cat_order,
                      text="n_firms" if group is None else None)
         if normalize and group is not None:
-            fig.update_layout(barnorm="fraction")     # <-- the fix (layout prop, not a px.bar arg)
+            fig.update_layout(barnorm="fraction")
     fig.update_traces(textposition="outside", cliponaxis=False)
     fig.update_layout(title=title, template="plotly_white", legend_title=group,
                       bargap=0.15, margin=dict(t=60, r=20, b=40, l=40),
                       legend=dict(orientation="h", y=-0.18),
-                      yaxis_title=("share of firms" if (normalize and group and by == "year")
+                      yaxis_title=("share of firms" if (normalize and group and by=="year")
                                    else "distinct firms"))
     if horizontal and by == "pooled":
         fig.update_layout(xaxis_title="distinct firms", yaxis_title=None)
