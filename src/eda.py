@@ -420,7 +420,7 @@ def plot_composition(counts, group=None, by="year", normalize=False,
                      horizontal=False, title=None):
     cmap = _TIER_COLORS if group == "carbon_tier" else None
     cat_order = None
-    
+
     if group is not None and str(counts[group].dtype) == "category":
         cats = list(counts[group].cat.categories)
         cat_order = {group: cats[::-1] if horizontal else cats}  # horizontal -> biggest on top
@@ -447,4 +447,6 @@ def plot_composition(counts, group=None, by="year", normalize=False,
                                    else "distinct firms"))
     if horizontal and by == "pooled":
         fig.update_layout(xaxis_title="distinct firms", yaxis_title=None)
+        fig.update_layout(yaxis={"categoryorder": "total ascending"})
+
     return fig
