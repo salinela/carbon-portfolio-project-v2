@@ -380,33 +380,25 @@ def sparse_cells(counts, min_firms=5):
     return counts.loc[counts["n_firms"] < min_firms].reset_index(drop=True)
 
 
-def collapse_composition(counts, group, top_n=4, min_cats=5,
-                         others_label="Others", min_firms=5):
+def collapse_composition(counts, group, top_n=4, min_cats=5, others_label="Others",
+                         min_firms=5, facet=None):                       
     counts = counts.copy()
-    has_year = "year" in counts.columns
-    
-    # re-order from 
-    totals = (counts.groupby(group, observed=True)["n_firms"].sum()
-                    .sort_values(ascending=False))
-    ordered = list(totals.index) # Extracts the unique group names, ordered 
-    
-    #
-    if len(ordered) > min_cats: # if categories are 6 and more collapse to 4 + Others
+    keep_keys = [k for k in ["year", facet] if k and k in counts.columns]
+    totals = counts.groupby(group, observed=True)["n_firms"].sum().sort_values(ascending=False)
+    ordered = list(totals.index)
+    if len(ordered) > min_cats:
         keep, drop = ordered[:top_n], ordered[top_n:]
-
         others_detail = counts[counts[group].isin(drop)].copy()
-
         lab = counts[group].astype(object).where(counts[group].isin(keep), others_label)
         counts = counts.assign(**{group: lab})
-        keys = (["year"] if has_year else []) + [group]
-        counts = counts.groupby(keys, observed=True)["n_firms"].sum().reset_index()
+        counts = counts.groupby(keep_keys + [group], observed=True)["n_firms"].sum().reset_index()
         counts["below_min"] = counts["n_firms"] < min_firms
         cat_order = keep + [others_label]
-    else: # if categories are 5 or lower
+    else:
         others_detail = counts.iloc[0:0].copy()
         cat_order = ordered
     counts[group] = pd.Categorical(counts[group], categories=cat_order, ordered=True)
-    counts = counts.sort_values((["year"] if has_year else []) + [group]).reset_index(drop=True)
+    counts = counts.sort_values(keep_keys + [group]).reset_index(drop=True)
     return counts, others_detail
 
 
@@ -417,8 +409,9 @@ _TIER_COLORS = {
 }
 
 def plot_composition(counts, group=None, by="year", normalize=False,
-                     horizontal=False, title=None):
-    cmap = _TIER_COLORS if group == "carbon_tier" else None
+                     horizontal=False, title=None, color_map=None):
+    
+    cmap = color_map if color_map is not None else (_TIER_COLORS if group == "carbon_tier" else None)
     cat_order = None
 
     if group is not None and str(counts[group].dtype) == "category":
@@ -450,3 +443,36 @@ def plot_composition(counts, group=None, by="year", normalize=False,
         fig.update_layout(yaxis={"categoryorder": "total ascending"})
 
     return fig
+
+# sector composition:
+def composition_counts_2d(panel_t, attr_df, facet, group, by="year",
+                          min_firms=5, id_col="company_id", date_col="date"):
+    base = firm_year_presence(panel_t, id_col=id_col, date_col=date_col)
+    base = base.merge(attr_df[[id_col, facet, group]], on=id_col, how="left")
+    keys = (["year"] if by != "pooled" else []) + [facet, group]
+    counts = base.groupby(keys)[id_col].nunique().reset_index(name="n_firms")
+    counts["below_min"] = counts["n_firms"] < min_firms
+    return counts
+
+def collapse_per_facet(counts_2d, group, facet, top_n=4, min_cats=5,
+                       others_label="Others", min_firms=5):
+    """Collapse `group` to top_n + Others SEPARATELY within each `facet` value."""
+    out = {}
+    for fv, sub in counts_2d.groupby(facet, observed=True):
+        sub = sub.drop(columns=[facet])
+        out[fv] = collapse_composition(sub, group, top_n=top_n, min_cats=min_cats,
+                                       others_label=others_label, min_firms=min_firms)
+    return out
+
+def shared_color_map(cat_lists, others_label="Others", palette=None):
+    """One colour per sector across panels (C is the same colour in both rows);
+    Others -> grey. Pass each panel's kept-category list."""
+    palette = palette or px.colors.qualitative.Plotly
+    seen = []
+    for lst in cat_lists:
+        for c in lst:
+            if c != others_label and c not in seen:
+                seen.append(c)
+    cmap = {c: palette[i % len(palette)] for i, c in enumerate(seen)}
+    cmap[others_label] = "#BBBBBB"
+    return cmap
