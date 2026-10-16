@@ -410,40 +410,41 @@ _TIER_COLORS = {
 
 def plot_composition(counts, group=None, by="year", normalize=False,
                      horizontal=False, title=None, color_map=None):
-    
     cmap = color_map if color_map is not None else (_TIER_COLORS if group == "carbon_tier" else None)
-    cat_order = None
 
+    cat_order = None
     if group is not None and str(counts[group].dtype) == "category":
-        cats = list(counts[group].cat.categories)
-        cat_order = {group: cats[::-1] if horizontal else cats}  # horizontal -> biggest on top
+        cat_order = {group: list(counts[group].cat.categories)}   # biggest-first, for stacking
+
     if by == "pooled":
         if group is None:
             fig = px.bar(counts, y="n_firms", text="n_firms")
-            fig.update_layout(yaxis={"categoryorder": "total ascending"})
         elif horizontal:
             fig = px.bar(counts, x="n_firms", y=group, color=group, orientation="h",
-                         text="n_firms", color_discrete_map=cmap, category_orders=cat_order)
+                         text="n_firms", color_discrete_map=cmap)
         else:
             fig = px.bar(counts, x=group, y="n_firms", color=group, text="n_firms",
-                         color_discrete_map=cmap, category_orders=cat_order)
-            fig.update_layout(yaxis={"categoryorder": "total ascending"})
-    else:
+                         color_discrete_map=cmap)
+        # order bars by size (shortest -> tallest). Categorical axis depends on
+        # orientation; do NOT pass category_orders (an explicit array overrides this).
+        if group is not None:
+            cat_axis = "yaxis" if horizontal else "xaxis"
+            fig.update_layout(**{cat_axis: {"categoryorder": "total ascending"}})
+    else:  # by == "year": stacked, keep biggest-first order for the stack
         fig = px.bar(counts, x="year", y="n_firms", color=group, barmode="stack",
                      color_discrete_map=cmap, category_orders=cat_order,
                      text="n_firms" if group is None else None)
         if normalize and group is not None:
             fig.update_layout(barnorm="fraction")
+
     fig.update_traces(textposition="outside", cliponaxis=False)
     fig.update_layout(title=title, template="plotly_white", legend_title=group,
                       bargap=0.15, margin=dict(t=60, r=20, b=40, l=40),
                       legend=dict(orientation="h", y=-0.18),
-                      yaxis_title=("share of firms" if (normalize and group and by=="year")
+                      yaxis_title=("share of firms" if (normalize and group and by == "year")
                                    else "distinct firms"))
     if horizontal and by == "pooled":
         fig.update_layout(xaxis_title="distinct firms", yaxis_title=None)
-        fig.update_layout(yaxis={"categoryorder": "total ascending"})
-
     return fig
 
 # sector composition:
