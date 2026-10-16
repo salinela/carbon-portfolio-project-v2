@@ -427,6 +427,7 @@ def plot_composition(counts, group=None, by="year", normalize=False,
         else:
             fig = px.bar(counts, x=group, y="n_firms", color=group, text="n_firms",
                          color_discrete_map=cmap, category_orders=cat_order)
+            fig.update_layout(yaxis={"categoryorder": "total ascending"})
     else:
         fig = px.bar(counts, x="year", y="n_firms", color=group, barmode="stack",
                      color_discrete_map=cmap, category_orders=cat_order,
