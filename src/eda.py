@@ -420,6 +420,7 @@ def plot_composition(counts, group=None, by="year", normalize=False,
     if by == "pooled":
         if group is None:
             fig = px.bar(counts, y="n_firms", text="n_firms")
+            fig.update_layout(yaxis={"categoryorder": "total ascending"})
         elif horizontal:
             fig = px.bar(counts, x="n_firms", y=group, color=group, orientation="h",
                          text="n_firms", color_discrete_map=cmap, category_orders=cat_order)
